@@ -135,3 +135,101 @@ pub fn is_server_not_running_error(err: &io::Error) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn server_not_running_matches_standard_error_kinds() {
+        let not_found = io::Error::from(io::ErrorKind::NotFound);
+        assert!(is_server_not_running_error(&not_found));
+        let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+        assert!(is_server_not_running_error(&refused));
+    }
+
+    #[test]
+    fn server_not_running_rejects_unrelated_errors() {
+        let permission = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(!is_server_not_running_error(&permission));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn server_not_running_translates_winsock_errnos() {
+        // WSAENETDOWN / WSAECONNREFUSED / WSAENOTSOCK / ENOENT / ESRCH
+        for code in [10050, 10061, 10038, 2, 3] {
+            let err = io::Error::from_raw_os_error(code);
+            assert!(
+                is_server_not_running_error(&err),
+                "code {code} should map to 'not running'"
+            );
+        }
+    }
+
+    #[test]
+    fn default_login_shell_prefers_shell_env_var() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("SHELL", "/path/to/zsh");
+        }
+        let shell = default_login_shell();
+        unsafe {
+            std::env::remove_var("SHELL");
+        }
+        assert_eq!(shell, "/path/to/zsh");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn fallback_config_dir_prefers_appdata_over_userprofile() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("APPDATA", "C:\\example\\AppData");
+            std::env::set_var("USERPROFILE", "C:\\example\\Profile");
+        }
+        let dir = fallback_config_dir("herdr-test");
+        unsafe {
+            std::env::remove_var("APPDATA");
+            std::env::remove_var("USERPROFILE");
+        }
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("C:\\example\\AppData").join("herdr-test"))
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn fallback_config_dir_falls_back_to_userprofile_when_appdata_missing() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("APPDATA");
+            std::env::set_var("USERPROFILE", "C:\\example\\Profile");
+        }
+        let dir = fallback_config_dir("herdr-test");
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+        }
+        assert_eq!(
+            dir,
+            Some(
+                PathBuf::from("C:\\example\\Profile")
+                    .join(".config")
+                    .join("herdr-test")
+            )
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn fallback_config_dir_returns_none_on_unix() {
+        assert_eq!(fallback_config_dir("herdr"), None);
+    }
+}

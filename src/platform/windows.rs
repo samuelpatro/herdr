@@ -259,6 +259,61 @@ pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::
     Ok(false)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(pid: u32, parent_pid: u32, name: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent_pid,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn strip_exe_suffix_removes_trailing_dot_exe() {
+        assert_eq!(strip_exe_suffix("claude.exe"), "claude");
+        assert_eq!(strip_exe_suffix("Claude.EXE"), "Claude");
+    }
+
+    #[test]
+    fn strip_exe_suffix_keeps_names_without_extension() {
+        assert_eq!(strip_exe_suffix("cmd"), "cmd");
+        assert_eq!(strip_exe_suffix("foo.bar"), "foo.bar");
+    }
+
+    #[test]
+    fn pick_active_descendant_returns_none_when_root_has_no_children() {
+        let snapshot = vec![entry(100, 1, "cmd")];
+        assert_eq!(pick_active_descendant(&snapshot, 100), None);
+    }
+
+    #[test]
+    fn pick_active_descendant_picks_deepest_leaf() {
+        // 100 (root) -> 200 -> 300; 100 -> 250 (sibling leaf). 300 is deeper.
+        let snapshot = vec![
+            entry(100, 1, "cmd"),
+            entry(200, 100, "node"),
+            entry(300, 200, "claude"),
+            entry(250, 100, "git"),
+        ];
+        assert_eq!(pick_active_descendant(&snapshot, 100), Some(300));
+    }
+
+    #[test]
+    fn pick_active_descendant_prefers_higher_pid_when_depth_ties() {
+        // Two leaves at the same depth; the higher PID wins as a cheap
+        // "more recently spawned" heuristic.
+        let snapshot = vec![
+            entry(100, 1, "cmd"),
+            entry(200, 100, "git"),
+            entry(201, 100, "claude"),
+        ];
+        assert_eq!(pick_active_descendant(&snapshot, 100), Some(201));
+    }
+}
+
 /// Unused on Windows but kept to mirror the Unix module signature.
 #[allow(dead_code)]
 fn clipboard_commands() -> Vec<ClipboardCommand> {
